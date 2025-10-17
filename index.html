@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quantum Earth - Step 11: Interactive Data Points</title>
+    <style>
+        body { 
+            margin: 0; 
+            background-color: #000000; 
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        canvas { 
+            display: block; 
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        .dashboard {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 300px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border-radius: 15px;
+            padding: 20px;
+            z-index: 2;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .dashboard h1 {
+            margin: 0 0 10px 0;
+            font-size: 24px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 10px;
+        }
+        .controls {
+            margin-top: 20px;
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        .control-group button {
+            width: 100%;
+            padding: 10px;
+            background-color: #007bff;
+            border: none;
+            color: white;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .control-group button:hover {
+            background-color: #0056b3;
+        }
+        /* NEW: Info Box styles */
+        #infoBox {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        #infoBox h3 {
+            margin: 0 0 10px 0;
+            color: #00ffff;
+        }
+        #infoBox p {
+            margin: 5px 0;
+        }
+        #infoBox .status-normal { color: #00ff00; }
+        #infoBox .status-warning { color: #ffff00; }
+        #infoBox .status-danger { color: #ff0000; }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard">
+        <h1>Quantum Earth v0.5</h1>
+        
+        <div class="controls">
+            <h2>AI Simulation</h2>
+            <div class="control-group">
+                <button id="simulationButton">Start Simulation</button>
+            </div>
+             <!-- NEW: Info Box -->
+            <div id="infoBox" style="display: none;">
+                <h3 id="cityName"></h3>
+                <p>Status: <span id="cityStatus"></span></p>
+                <p>Temp: <span id="cityTemp"></span></p>
+                <p>Prediction: <span id="cityPrediction"></span></p>
+            </div>
+
+            <h2>Global Controls</h2>
+            <div class="control-group">
+                <label for="rotationSpeed">Rotation Speed</label>
+                <input type="range" id="rotationSpeed" min="0" max="0.01" step="0.0001" value="0.001">
+            </div>
+            
+            <h2>Data Layers</h2>
+            <div class="control-group">
+                <label><input type="checkbox" id="toggleClouds" checked> Show Clouds</label>
+            </div>
+            <div class="control-group">
+                <label><input type="checkbox" id="toggleCities" checked> Show Major Cities</label>
+            </div>
+            <div class="control-group">
+                <label><input type="checkbox" id="toggleArcs" checked> Show Connections</label>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        let earth, clouds, dataPointsGroup, arcsGroup;
+        let rotationSpeed = 0.001;
+        const clock = new THREE.Clock();
+        let simulationInterval;
+        let isSimulating = false;
+        const alertColors = {
+            normal: new THREE.Color(0x00ff00),
+            warning: new THREE.Color(0xffff00),
+            danger: new THREE.Color(0xff0000)
+        };
+        // --- NEW: Raycaster for mouse picking ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5;
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        function latLonToVector3(lat, lon, radius) {
+            const phi = (90 - lat) * (Math.PI / 180);
+            const theta = (lon + 180) * (Math.PI / 180);
+            const x = -(radius * Math.sin(phi) * Math.cos(theta));
+            const y = radius * Math.cos(phi);
+            const z = radius * Math.sin(phi) * Math.sin(theta);
+            return new THREE.Vector3(x, y, z);
+        }
+
+        const textureLoader = new THREE.TextureLoader();
+        earth = new THREE.Mesh( new THREE.SphereGeometry(2, 64, 64), new THREE.MeshStandardMaterial({ map: textureLoader.load('https://unpkg.com/three-globe@2.27.2/example/img/earth-day.jpg') }) );
+        scene.add(earth);
+        clouds = new THREE.Mesh( new THREE.SphereGeometry(2.02, 64, 64), new THREE.MeshStandardMaterial({ map: textureLoader.load('https://unpkg.com/three-globe@2.27.2/example/img/earth-clouds.png'), transparent: true, opacity: 0.8 }) );
+        scene.add(clouds);
+        dataPointsGroup = new THREE.Group();
+        earth.add(dataPointsGroup);
+        arcsGroup = new THREE.Group();
+        earth.add(arcsGroup);
+
+        const majorCities = {
+            'Manila': { lat: 14.5995, lon: 120.9842, data: { status: 'normal', temp: 32, prediction: 'Clear skies' } },
+            'Tokyo': { lat: 35.6895, lon: 139.6917, data: { status: 'normal', temp: 25, prediction: 'Partly cloudy' } },
+            'New York': { lat: 40.7128, lon: -74.0060, data: { status: 'normal', temp: 22, prediction: 'Sunny' } },
+            'London': { lat: 51.5074, lon: -0.1278, data: { status: 'normal', temp: 18, prediction: 'Light rain' } },
+            'Sydney': { lat: -33.8688, lon: 151.2093, data: { status: 'normal', temp: 28, prediction: 'Windy' } },
+            'Cairo': { lat: 30.0444, lon: 31.2357, data: { status: 'normal', temp: 35, prediction: 'Very hot' } },
+            'São Paulo': { lat: -23.5505, lon: -46.6333, data: { status: 'normal', temp: 29, prediction: 'Humid' } }
+        };
+
+        Object.keys(majorCities).forEach(cityName => {
+            const city = majorCities[cityName];
+            const position = latLonToVector3(city.lat, city.lon, 2);
+            const pointMaterial = new THREE.MeshBasicMaterial({ color: alertColors[city.data.status] });
+            const point = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 16), pointMaterial);
+            point.position.copy(position);
+            point.name = cityName;
+            dataPointsGroup.add(point);
+        });
+        
+        const connections = [['Manila', 'Tokyo'], ['New York', 'London'], ['London', 'Cairo'], ['Sydney', 'Manila'], ['São Paulo', 'New York']];
+        const arcMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+        connections.forEach(pair => { const startVec = latLonToVector3(majorCities[pair[0]].lat, majorCities[pair[0]].lon, 2); const endVec = latLonToVector3(majorCities[pair[1]].lat, majorCities[pair[1]].lon, 2); const midPoint = new THREE.Vector3().addVectors(startVec, endVec).multiplyScalar(0.5); midPoint.normalize().multiplyScalar(midPoint.length() + startVec.distanceTo(endVec) * 0.4); const curve = new THREE.QuadraticBezierCurve3(startVec, midPoint, endVec); arcsGroup.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 20, 0.005, 8, false), arcMaterial)); });
+        const starVertices = []; for (let i = 0; i < 10000; i++) { const x = (Math.random() - 0.5) * 2000; const y = (Math.random() - 0.5) * 2000; const z = (Math.random() - 0.5) * 2000; starVertices.push(x, y, z); } const starGeometry = new THREE.BufferGeometry(); starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3)); const stars = new THREE.Points(starGeometry, new THREE.PointsMaterial({ color: 0xffffff, size: 0.1 })); scene.add(stars);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); scene.add(ambientLight); const pointLight = new THREE.PointLight(0xffffff, 1.5); pointLight.position.set(5, 3, 5); scene.add(pointLight);
+
+        function runDataSimulation() {
+            const predictions = ['Storm incoming', 'Heatwave warning', 'Normal weather', 'High winds', 'Flooding risk'];
+            dataPointsGroup.children.forEach(point => {
+                const rand = Math.random();
+                let newStatus;
+                if (rand < 0.7) newStatus = 'normal';
+                else if (rand < 0.9) newStatus = 'warning';
+                else newStatus = 'danger';
+                
+                majorCities[point.name].data.status = newStatus;
+                majorCities[point.name].data.temp = Math.floor(Math.random() * 20 + 15); // Random temp 15-35
+                majorCities[point.name].data.prediction = predictions[Math.floor(Math.random() * predictions.length)];
+                point.material.color.set(alertColors[newStatus]);
+            });
+        }
+        // --- NEW: Update Info Box function ---
+        function updateInfoBox(cityName) {
+            const infoBox = document.getElementById('infoBox');
+            if (cityName) {
+                const cityData = majorCities[cityName].data;
+                document.getElementById('cityName').textContent = cityName;
+                const statusSpan = document.getElementById('cityStatus');
+                statusSpan.textContent = cityData.status.charAt(0).toUpperCase() + cityData.status.slice(1);
+                statusSpan.className = 'status-' + cityData.status;
+                document.getElementById('cityTemp').textContent = `${cityData.temp}°C`;
+                document.getElementById('cityPrediction').textContent = cityData.prediction;
+                infoBox.style.display = 'block';
+            } else {
+                infoBox.style.display = 'none';
+            }
+        }
+
+        function onMouseClick(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(dataPointsGroup.children);
+
+            if (intersects.length > 0) {
+                const selectedObject = intersects[0].object;
+                updateInfoBox(selectedObject.name);
+            } else {
+                updateInfoBox(null); // Hide info box if background is clicked
+            }
+        }
+
+        function animate() { requestAnimationFrame(animate); const elapsedTime = clock.getElapsedTime(); if (!controls.enableRotate) { earth.rotation.y += rotationSpeed; clouds.rotation.y += rotationSpeed * 1.2; } dataPointsGroup.children.forEach((point, index) => { const pulse = Math.sin(elapsedTime * 2 + index) * 0.4 + 1.0; point.scale.set(pulse, pulse, pulse); }); controls.update(); renderer.render(scene, camera); }
+        window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+        controls.addEventListener('start', () => { controls.enableRotate = true; }); controls.addEventListener('end', () => { controls.enableRotate = false; });
+        document.getElementById('rotationSpeed').addEventListener('input', (e) => { rotationSpeed = parseFloat(e.target.value); });
+        document.getElementById('toggleClouds').addEventListener('change', (e) => { clouds.visible = e.target.checked; });
+        document.getElementById('toggleCities').addEventListener('change', (e) => { dataPointsGroup.visible = e.target.checked; });
+        document.getElementById('toggleArcs').addEventListener('change', (e) => { arcsGroup.visible = e.target.checked; });
+        document.getElementById('simulationButton').addEventListener('click', () => { isSimulating = !isSimulating; if (isSimulating) { document.getElementById('simulationButton').innerText = 'Stop Simulation'; document.getElementById('simulationButton').style.backgroundColor = '#dc3545'; runDataSimulation(); simulationInterval = setInterval(runDataSimulation, 2000); } else { document.getElementById('simulationButton').innerText = 'Start Simulation'; document.getElementById('simulationButton').style.backgroundColor = '#007bff'; clearInterval(simulationInterval); } });
+        // --- NEW: Add click listener ---
+        window.addEventListener('click', onMouseClick);
+        animate();
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
